@@ -1,0 +1,7 @@
+tmp/
+*.csv
+*.pdf
+serial
+*.png
+rigol
+*.out

@@ -1,0 +1,9 @@
+profile = default
+version = 0.27.0
+space-around-lists=false
+space-around-arrays=false
+margin=75
+let-binding-indent=4
+max-indent=4
+match-indent=4
+function-indent=4
