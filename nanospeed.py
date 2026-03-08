@@ -31,6 +31,12 @@ buf0 = np.zeros(HISTORY, dtype=np.float64)
 
 buf1 = np.zeros(HISTORY, dtype=np.float64)
 
+# Trigger settings
+trigger_enabled = True
+trigger_channel = 0  # 0 for buf0, 1 for buf1
+trigger_level = 0.0
+trigger_offset = 0  # Offset from trigger point
+
 # ########
 # FILTRAGE
 # ########
@@ -105,6 +111,12 @@ colors = np.zeros((256, 4), dtype=np.uint8)
 colors[:,0] = 255
 colors[:,3] = alpha
 
+def find_trigger_point(data, level=0.0):
+    for i in range(len(data) - 1):
+        if data[i] <= level and data[i + 1] > level:
+            return i
+    return 0  # Default to start if no trigger found
+
 def update():
     global ptr, x_min, x_max, y_min, y_max
 
@@ -148,6 +160,15 @@ def update():
     # rolling view
     view0 = np.roll(buf0, -ptr)
     view1 = np.roll(buf1, -ptr)
+    
+    # Apply trigger
+    if trigger_enabled:
+        trigger_data = view0 if trigger_channel == 0 else view1
+        trigger_idx = find_trigger_point(trigger_data, trigger_level)
+        trigger_idx += trigger_offset
+        view0 = np.roll(view0, -trigger_idx)
+        view1 = np.roll(view1, -trigger_idx)
+    
     curve0.setData(view0)
     curve1.setData(view1)
     
