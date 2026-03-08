@@ -6,7 +6,7 @@ import time
 import subprocess
 from scipy.signal import butter, filtfilt
 
-HISTORY = 4000          # visible history
+HISTORY = 10000          # visible history
 
 ################################
 ################################
@@ -34,14 +34,14 @@ buf1 = np.zeros(HISTORY, dtype=np.float64)
 # Trigger settings
 trigger_enabled = True
 trigger_channel = 0  # 0 for buf0, 1 for buf1
-trigger_level = 0.0
+trigger_level = 0.1
 trigger_offset = 0  # Offset from trigger point
 
 # ########
 # FILTRAGE
 # ########
 
-filt_b, filt_a = butter(3, 0.05, btype='low')
+filt_b, filt_a = butter(3, 0.15, btype='low')
 
 ################################
 ################################
@@ -130,9 +130,7 @@ def update():
     x_values = samples[0::2]
     y_values = samples[1::2]
 
-    x_values = filtfilt(filt_b, filt_a, x_values)
-    y_values = filtfilt(filt_b, filt_a, y_values)
-
+    # Store RAW data
     n = len(x_values)
     if ptr + n < HISTORY:
         buf0[ptr:ptr+n] = x_values
@@ -161,16 +159,30 @@ def update():
     view0 = np.roll(buf0, -ptr)
     view1 = np.roll(buf1, -ptr)
     
-    # Apply trigger
+    # Filter the display buffer (zero-phase)
+    view0_filt = filtfilt(filt_b, filt_a, view0)
+    view1_filt = filtfilt(filt_b, filt_a, view1)
+    
+    # Apply trigger on filtered data
     if trigger_enabled:
-        trigger_data = view0 if trigger_channel == 0 else view1
+        trigger_data = view0_filt if trigger_channel == 0 else view1_filt
+        trigger_level = view0_filt.mean() 
         trigger_idx = find_trigger_point(trigger_data, trigger_level)
         trigger_idx += trigger_offset
-        view0 = np.roll(view0, -trigger_idx)
-        view1 = np.roll(view1, -trigger_idx)
+        
+        # Instead of rolling, slice from trigger point and pad with NaN to avoid wrap-around artifacts
+        valid_length = len(view0_filt) - trigger_idx
+        view0_filt_triggered = np.full_like(view0_filt, np.nan)
+        view1_filt_triggered = np.full_like(view1_filt, np.nan)
+        
+        view0_filt_triggered[:valid_length] = view0_filt[trigger_idx:]
+        view1_filt_triggered[:valid_length] = view1_filt[trigger_idx:]
+        
+        view0_filt = view0_filt_triggered
+        view1_filt = view1_filt_triggered
     
-    curve0.setData(view0)
-    curve1.setData(view1)
+    curve0.setData(view0_filt)
+    curve1.setData(view1_filt)
     
     # Safe range setting with bounds checking
     y_range_min = float(min(y_min, x_min) * 2)
@@ -191,7 +203,10 @@ def update():
 
     circle.setRect(float(-r), float(-r), float(2*r), float(2*r))
     
-    scatter.setData(x_values, y_values, brush=colors)
+    # Use filtered recent data for scatter plot (last 256 points)
+    scatter_x = view0[-256:]
+    scatter_y = view1[-256:]
+    scatter.setData(scatter_x, scatter_y, brush=colors)
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
