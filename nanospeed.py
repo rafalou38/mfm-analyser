@@ -57,15 +57,18 @@ win = pg.GraphicsLayoutWidget(show=True, title="Nano Oscilloscope")
 # ############
 plot = win.addPlot(title="Signals")
 plot.setYRange(0, 1)
+plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
 curve0 = plot.plot(pen='y', name="A0")
 curve1 = plot.plot(pen='c', name="A1")
 
 overlay = pg.ViewBox()
 plot.scene().addItem(overlay)
+overlay.setZValue(1000)
 
 overlay.setXRange(-1,1)
 overlay.setYRange(-1,1)
 overlay.setAspectLocked(True)
+overlay.setBackgroundColor((0, 0, 0, 200))
 
 def update_overlay_geometry():
     rect = plot.getViewBox().sceneBoundingRect()
@@ -86,11 +89,25 @@ update_overlay_geometry()
 # ############
 # Pointeur
 # ############
+# Create radial grid for overlay
+radial_grid_circles = []
+for i in range(1, 5):  # 4 concentric circles at 0.25, 0.5, 0.75, 1.0
+    circle_item = QtWidgets.QGraphicsEllipseItem()
+    circle_item.setPen(pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
+    radial_grid_circles.append(circle_item)
+    overlay.addItem(circle_item)
+
+radial_grid_lines = []
+for angle in [0, 45, 90, 135, 180, 225, 270, 315]:  # 8 radial lines
+    line = pg.InfiniteLine(angle=angle, pen=pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
+    radial_grid_lines.append(line)
+    overlay.addItem(line)
+
 vline = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('w', width=1))
 hline = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('w', width=1))
 
 circle = QtWidgets.QGraphicsEllipseItem()
-circle.setPen(pg.mkPen('w', width=1))
+circle.setPen(pg.mkPen('w', width=2))
 scale_text = pg.TextItem(anchor=(1,1), color='w')
 overlay.addItem(scale_text)
 
@@ -202,6 +219,11 @@ def update():
     overlay.setYRange(float(-r), float(r))
 
     circle.setRect(float(-r), float(-r), float(2*r), float(2*r))
+    
+    # Update radial grid circles
+    for i, circle_item in enumerate(radial_grid_circles):
+        radius = r * (i + 1) / 4  # Divide into 4 sections
+        circle_item.setRect(float(-radius), float(-radius), float(2*radius), float(2*radius))
     
     # Use filtered recent data for scatter plot (last 256 points)
     scatter_x = view0[-256:]
