@@ -18,8 +18,8 @@ HISTORY = 10000          # visible history
 # ############
 # Data
 # ############
-FRAME_FLOATS = 512
-FRAME_BYTES = FRAME_FLOATS * 4
+FRAME_N = 256
+FRAME_BYTES = FRAME_N * (4 + 4 + 1)
 proc = subprocess.Popen(
     ["./serial"],
     stdout=subprocess.PIPE,
@@ -28,8 +28,8 @@ proc = subprocess.Popen(
 
 ptr = 0
 buf0 = np.zeros(HISTORY, dtype=np.float64)
-
 buf1 = np.zeros(HISTORY, dtype=np.float64)
+bufz = np.zeros(HISTORY, dtype=np.int8)
 
 # Trigger settings
 trigger_enabled = True
@@ -60,6 +60,7 @@ plot.setYRange(0, 1)
 plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
 curve0 = plot.plot(pen='y', name="A0")
 curve1 = plot.plot(pen='c', name="A1")
+curvez = plot.plot(pen='m', name="Az")
 
 overlay = pg.ViewBox()
 plot.scene().addItem(overlay)
@@ -141,23 +142,33 @@ def update():
     if len(data) != FRAME_BYTES:
         print("End of stream")
         return
-    
-    samples = np.frombuffer(data, dtype=np.float32)
+    dtype = np.dtype([
+        ("x", np.float32),
+        ("y", np.float32),
+        ("z", np.int8),
+    ])
+    samples = np.frombuffer(data, dtype=dtype)
 
-    x_values = samples[0::2]
-    y_values = samples[1::2]
+    x_values = samples['x']
+    y_values = samples['y']
+    z_values = samples['z']
 
     # Store RAW data
     n = len(x_values)
     if ptr + n < HISTORY:
         buf0[ptr:ptr+n] = x_values
         buf1[ptr:ptr+n] = y_values
+        bufz[ptr:ptr+n] = z_values
     else:
         k = HISTORY - ptr
         buf0[ptr:] = x_values[:k]
         buf1[ptr:] = y_values[:k]
+        bufz[ptr:] = z_values[:k]
+
         buf0[:n-k] = x_values[k:]
         buf1[:n-k] = y_values[k:]
+        bufz[:n-k] = z_values[k:]
+
     ptr = (ptr + n) % HISTORY
 
     x_min = min(buf0.min(), x_min)
@@ -200,7 +211,8 @@ def update():
     
     curve0.setData(view0_filt)
     curve1.setData(view1_filt)
-    
+    curvez.setData(bufz * max(x_max, y_max))
+
     # Safe range setting with bounds checking
     y_range_min = float(min(y_min, x_min) * 2)
     y_range_max = float(max(x_max, y_max) * 5)

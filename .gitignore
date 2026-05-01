@@ -5,3 +5,5 @@ serial
 *.png
 rigol
 *.out
+*.bin
+*.bkp

@@ -3,10 +3,12 @@
 #include <unistd.h>
 #include <termios.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 const uint32_t SYNC = 0xBA0BABED;
 
 #define N 256
+#define SZ N * (sizeof(float) + sizeof(float) + sizeof(char))
 
 
 int main() {
@@ -25,6 +27,8 @@ int main() {
 
     uint32_t chunk = 0;
 
+    void *buffer = malloc(SZ);
+
     while (1) {
         /* find sync */
         while (1) {
@@ -38,14 +42,15 @@ int main() {
         }
 
         /* read frame */
-        float data[N * 2];
+        // float data[N * 2];
+        char iref[N];
         size_t got = 0;
-        while (got < sizeof(data)) {
-            got += read(fd, ((uint8_t*)data) + got, sizeof(data) - got);
+        while (got < SZ) {
+            got += read(fd, ((uint8_t*)buffer) + got, SZ - got);
         }
 
         /* forward */
-        write(STDOUT_FILENO, data, sizeof(data));
+        write(STDOUT_FILENO, buffer, SZ);
 
 
         // for (int i = 0; i < N; i++) {
