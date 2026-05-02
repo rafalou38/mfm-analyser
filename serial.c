@@ -8,7 +8,7 @@
 const uint32_t SYNC = 0xBA0BABED;
 
 #define N 256
-#define SZ N * (sizeof(float) + sizeof(float) + sizeof(char))
+#define SZ N * (sizeof(float) + sizeof(float) + sizeof(char) + sizeof(uint32_t))
 
 
 int main() {
@@ -41,8 +41,6 @@ int main() {
                 break;
         }
 
-        /* read frame */
-        // float data[N * 2];
         char iref[N];
         size_t got = 0;
         while (got < SZ) {
@@ -51,15 +49,5 @@ int main() {
 
         /* forward */
         write(STDOUT_FILENO, buffer, SZ);
-
-
-        // for (int i = 0; i < N; i++) {
-        //     float x = data[2*i];
-        //     float y = data[2*i+1];
-
-        //     printf("%f %f\n", x, y);
-        // }
-
-        // fflush(stdout);
     }
 }
