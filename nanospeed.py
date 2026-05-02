@@ -32,6 +32,7 @@ buf1 = np.zeros(HISTORY, dtype=np.float64)
 bufz = np.zeros(HISTORY, dtype=np.int8)
 
 # Trigger settings
+filter_enabled = False
 trigger_enabled = True
 trigger_channel = 0  # 0 for buf0, 1 for buf1
 trigger_level = 0.1
@@ -49,85 +50,125 @@ filt_b, filt_a = butter(3, 0.15, btype='low')
 ################################
 ################################
 
-
-app = QtWidgets.QApplication([])
-win = pg.GraphicsLayoutWidget(show=True, title="Nano Oscilloscope")
 # ############
 # Signaux
 # ############
-plot = win.addPlot(title="Signals")
-plot.setYRange(0, 1)
-plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
-curve0 = plot.plot(pen='y', name="A0")
-curve1 = plot.plot(pen='c', name="A1")
-curvez = plot.plot(pen='m', name="Az")
 
-overlay = pg.ViewBox()
-plot.scene().addItem(overlay)
-overlay.setZValue(1000)
+app = QtWidgets.QApplication([])
+win = pg.GraphicsLayoutWidget(show=True, title="NanoSpeed")
 
-overlay.setXRange(-1,1)
-overlay.setYRange(-1,1)
-overlay.setAspectLocked(True)
-overlay.setBackgroundColor((0, 0, 0, 200))
 
-def update_overlay_geometry():
-    rect = plot.getViewBox().sceneBoundingRect()
 
-    w = rect.width() * 0.35
-    h = rect.height() * 0.35
-
-    overlay.setGeometry(
-        rect.x() + rect.width() - w,
-        rect.y(),
-        w,
-        h
-    )
-
-plot.getViewBox().sigResized.connect(update_overlay_geometry)
-update_overlay_geometry()
-
-# ############
-# Pointeur
-# ############
-# Create radial grid for overlay
-radial_grid_circles = []
-for i in range(1, 5):  # 4 concentric circles at 0.25, 0.5, 0.75, 1.0
-    circle_item = QtWidgets.QGraphicsEllipseItem()
-    circle_item.setPen(pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
-    radial_grid_circles.append(circle_item)
-    overlay.addItem(circle_item)
-
-radial_grid_lines = []
-for angle in [0, 45, 90, 135, 180, 225, 270, 315]:  # 8 radial lines
-    line = pg.InfiniteLine(angle=angle, pen=pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
-    radial_grid_lines.append(line)
-    overlay.addItem(line)
-
-vline = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('w', width=1))
-hline = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('w', width=1))
-
-circle = QtWidgets.QGraphicsEllipseItem()
-circle.setPen(pg.mkPen('w', width=2))
-scale_text = pg.TextItem(anchor=(1,1), color='w')
-overlay.addItem(scale_text)
-
-scatter = pg.ScatterPlotItem(size=4, brush='r', pen=None)
-
-overlay.addItem(scatter)
-overlay.addItem(vline)
-overlay.addItem(hline)
-overlay.addItem(circle)
 
 x_min = 0.0
 x_max = 0.01
 y_min = 0.0
 y_max = 0.01
 
-alpha = np.linspace(255, 0, 256).astype(np.uint8)
-colors = np.zeros((256, 4), dtype=np.uint8)
-colors[:,0] = 255
-colors[:,3] = alpha
+
+class MainPlot:
+    def __init__(self, win):
+        self.plot = win.addPlot(title="Signals")
+        self.plot.setYRange(0, 1)
+        self.plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
+        self.curve0 = self.plot.plot(pen='y', name="A0")
+        self.curve1 = self.plot.plot(pen='c', name="A1")
+        self.curvez = self.plot.plot(pen='m', name="Az")
+
+class FFTView:
+    def __init__(self, win):
+        self.plot = win.addPlot(title="FFT")
+        self.plot.setYRange(0, 1)
+        self.plot.showGrid(x=True, y=True, alpha=0.3)
+        self.curve = self.plot.plot(pen='w')
+
+class CursorView:
+    def __init__(self, win):
+
+        overlay = pg.ViewBox()
+        overlay.setZValue(1000)
+        overlay.setXRange(-1,1)
+        overlay.setYRange(-1,1)
+        overlay.setAspectLocked(True)
+        overlay.setBackgroundColor((0, 0, 0, 200))
+        win.scene().addItem(overlay)
+
+        self._overlay = overlay
+        # Deco
+        self.radial_grid_circles = []
+        for i in range(1, 5):  # 4 concentric circles at 0.25, 0.5, 0.75, 1.0
+            circle_item = QtWidgets.QGraphicsEllipseItem()
+            circle_item.setPen(pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
+            self.radial_grid_circles.append(circle_item)
+            overlay.addItem(circle_item)
+
+        radial_grid_lines = []
+        for angle in [0, 45, 90, 135, 180, 225, 270, 315]:  # 8 radial lines
+            line = pg.InfiniteLine(angle=angle, pen=pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine))
+            radial_grid_lines.append(line)
+            overlay.addItem(line)
+
+        vline = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('w', width=1))
+        hline = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('w', width=1))
+
+        self.circle = QtWidgets.QGraphicsEllipseItem()
+        self.circle.setPen(pg.mkPen('w', width=2))
+        self.scale_text = pg.TextItem(anchor=(1,1), color='w')
+        overlay.addItem(self.scale_text)
+
+        # Graph
+        self.scatter = pg.ScatterPlotItem(size=4, brush='r', pen=None)
+
+        overlay.addItem(self.scatter)
+        overlay.addItem(vline)
+        overlay.addItem(hline)
+        overlay.addItem(self.circle)
+
+
+        alpha = np.linspace(255, 0, 256).astype(np.uint8)
+        self.colors = np.zeros((256, 4), dtype=np.uint8)
+        self.colors[:,0] = 255
+        self.colors[:,3] = alpha
+    def update(self):
+        # Update overlay pointer
+        r = float(max(abs(x_min), abs(x_max), abs(y_min), abs(y_max)))
+        if not np.isfinite(r) or r > 10 or r < 1e-10:
+            return
+        
+        self.scale_text.setText(f"±{r:.3f}")
+        self.scale_text.setPos(r, r)
+
+        self._overlay.setXRange(float(-r), float(r))
+        self._overlay.setYRange(float(-r), float(r))
+
+        self.circle.setRect(float(-r), float(-r), float(2*r), float(2*r))
+        
+        # Update radial grid circles
+        for i, circle_item in enumerate(self.radial_grid_circles):
+            radius = r * (i + 1) / 4  # Divide into 4 sections
+            circle_item.setRect(float(-radius), float(-radius), float(2*radius), float(2*radius))
+    
+    def update_geometry(self, plot):
+        rect = plot.getViewBox().sceneBoundingRect()
+
+        w = rect.width() * 0.35
+        h = rect.height() * 0.35
+
+        self._overlay.setGeometry(
+            rect.x() + rect.width() - w,
+            rect.y(),
+            w,
+            h
+        )
+
+    def set_data(self, x, y):
+        self.scatter.setData(x, y, brush=self.colors)
+
+cursor_view = CursorView(win)
+main_plot = MainPlot(win)
+
+main_plot.plot.getViewBox().sigResized.connect(lambda: cursor_view.update_geometry(main_plot.plot))
+cursor_view.update_geometry(main_plot.plot)
 
 def find_trigger_point(data, level=0.0):
     for i in range(len(data) - 1):
@@ -135,8 +176,71 @@ def find_trigger_point(data, level=0.0):
             return i
     return 0  # Default to start if no trigger found
 
-def update():
-    global ptr, x_min, x_max, y_min, y_max
+
+def filter_data():
+    # rolling view
+    view0 = np.roll(buf0, -ptr)
+    view1 = np.roll(buf1, -ptr)
+    viewz = np.roll(bufz, -ptr)
+
+    # Filter the display buffer (zero-phase)
+    if filter_enabled:
+        view0_filt = filtfilt(filt_b, filt_a, view0)
+        view1_filt = filtfilt(filt_b, filt_a, view1)
+        viewz_filt = viewz  # Keep raw z values for triggering and display
+        # viewz_filt = filtfilt(filt_b, filt_a, viewz)
+    else:
+        view0_filt = view0
+        view1_filt = view1
+        viewz_filt = viewz
+
+    # Apply trigger on filtered data
+    if trigger_enabled:
+        trigger_data = viewz_filt if trigger_channel == 0 else view1_filt
+        trigger_level = viewz_filt.mean() 
+        trigger_idx = find_trigger_point(trigger_data, trigger_level)
+        trigger_idx += trigger_offset
+        
+        # Instead of rolling, slice from trigger point and pad with NaN to avoid wrap-around artifacts
+        valid_length = len(view0_filt) - trigger_idx
+        view0_filt_triggered = np.full_like(view0_filt, np.nan)
+        view1_filt_triggered = np.full_like(view1_filt, np.nan)
+        view_z_filt_triggered = np.full_like(viewz, np.nan)
+
+
+        
+        view0_filt_triggered[:valid_length] = view0_filt[trigger_idx:]
+        view1_filt_triggered[:valid_length] = view1_filt[trigger_idx:]
+        view_z_filt_triggered[:valid_length] = viewz[trigger_idx:]
+
+        view0_filt = view0_filt_triggered
+        view1_filt = view1_filt_triggered
+        viewz_filt = view_z_filt_triggered
+
+    return view0, view0_filt, view1, view1_filt, viewz, viewz_filt
+
+def draw():
+    view0_raw, view0_filt, view1_raw, view1_filt, viewz_raw, viewz_filt = filter_data()
+
+    main_plot.curve0.setData(view0_filt)
+    main_plot.curve1.setData(view1_filt)
+    main_plot.curvez.setData(viewz_filt * max(x_max, y_max))
+
+    # Safe range setting with bounds checking
+    y_range_min = float(min(y_min, x_min) * 2)
+    y_range_max = float(max(x_max, y_max) * 5)
+    if np.isfinite([y_range_min, y_range_max]).all() and abs(y_range_max - y_range_min) < 1e6:
+        main_plot.plot.setYRange(y_range_min, y_range_max)
+
+    
+    cursor_view.update()
+    cursor_view.set_data(
+        view0_raw[-256:],
+        view1_raw[-256:]
+    )
+
+def read_serial():
+    global ptr
 
     data = proc.stdout.read(FRAME_BYTES)
     if len(data) != FRAME_BYTES:
@@ -171,6 +275,12 @@ def update():
 
     ptr = (ptr + n) % HISTORY
 
+
+def update():
+    global x_min, x_max, y_min, y_max
+
+    read_serial()
+    
     x_min = min(buf0.min(), x_min)
     x_max = max(buf0.max(), x_max)
     y_min = min(buf1.min(), y_min)
@@ -183,64 +293,9 @@ def update():
         y_min = buf1.min()
         y_max = buf1.max()
 
-    # rolling view
-    view0 = np.roll(buf0, -ptr)
-    view1 = np.roll(buf1, -ptr)
-    
-    # Filter the display buffer (zero-phase)
-    view0_filt = filtfilt(filt_b, filt_a, view0)
-    view1_filt = filtfilt(filt_b, filt_a, view1)
-    
-    # Apply trigger on filtered data
-    if trigger_enabled:
-        trigger_data = view0_filt if trigger_channel == 0 else view1_filt
-        trigger_level = view0_filt.mean() 
-        trigger_idx = find_trigger_point(trigger_data, trigger_level)
-        trigger_idx += trigger_offset
-        
-        # Instead of rolling, slice from trigger point and pad with NaN to avoid wrap-around artifacts
-        valid_length = len(view0_filt) - trigger_idx
-        view0_filt_triggered = np.full_like(view0_filt, np.nan)
-        view1_filt_triggered = np.full_like(view1_filt, np.nan)
-        
-        view0_filt_triggered[:valid_length] = view0_filt[trigger_idx:]
-        view1_filt_triggered[:valid_length] = view1_filt[trigger_idx:]
-        
-        view0_filt = view0_filt_triggered
-        view1_filt = view1_filt_triggered
-    
-    curve0.setData(view0_filt)
-    curve1.setData(view1_filt)
-    curvez.setData(bufz * max(x_max, y_max))
+    draw()
 
-    # Safe range setting with bounds checking
-    y_range_min = float(min(y_min, x_min) * 2)
-    y_range_max = float(max(x_max, y_max) * 5)
-    if np.isfinite([y_range_min, y_range_max]).all() and abs(y_range_max - y_range_min) < 1e6:
-        plot.setYRange(y_range_min, y_range_max)
 
-    # Update overlay pointer
-    r = float(max(abs(x_min), abs(x_max), abs(y_min), abs(y_max)))
-    if not np.isfinite(r) or r > 10 or r < 1e-10:
-        return
-    
-    scale_text.setText(f"±{r:.3f}")
-    scale_text.setPos(r, r)
-
-    overlay.setXRange(float(-r), float(r))
-    overlay.setYRange(float(-r), float(r))
-
-    circle.setRect(float(-r), float(-r), float(2*r), float(2*r))
-    
-    # Update radial grid circles
-    for i, circle_item in enumerate(radial_grid_circles):
-        radius = r * (i + 1) / 4  # Divide into 4 sections
-        circle_item.setRect(float(-radius), float(-radius), float(2*radius), float(2*radius))
-    
-    # Use filtered recent data for scatter plot (last 256 points)
-    scatter_x = view0[-256:]
-    scatter_y = view1[-256:]
-    scatter.setData(scatter_x, scatter_y, brush=colors)
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
