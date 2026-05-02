@@ -8,7 +8,11 @@ import time
 import subprocess
 from scipy.signal import butter, filtfilt, sosfilt, sosfilt_zi
 
+from LockIn import LockIn
+
 HISTORY = 10000          # visible history
+
+FFT_ONLY = False
 
 ################################
 ################################
@@ -16,23 +20,11 @@ HISTORY = 10000          # visible history
 ################################
 ################################
 
-
 # ############
 # Data
 # ############
-FRAME_N = 256
-FRAME_BYTES = FRAME_N * (4 + 4 + 1 + 4)
-proc = subprocess.Popen(
-    ["./serial"],
-    stdout=subprocess.PIPE,
-    bufsize=0
-)
 
-ptr = 0
-buf0 = np.zeros(HISTORY, dtype=np.float64)
-buf1 = np.zeros(HISTORY, dtype=np.float64)
-bufz = np.zeros(HISTORY, dtype=np.int8)
-buft = np.zeros(HISTORY, dtype=np.float64)
+lk = LockIn(HISTORY)
 
 # Trigger settings
 filter_enabled = False
@@ -45,17 +37,11 @@ trigger_channel = 0  # 0 for buf0, 1 for buf1
 trigger_level = 0.1
 trigger_offset = 0  # Offset from trigger point
 
-ready = False
-
-x_min = 0.0
-x_max = 0.01
-y_min = 0.0
-y_max = 0.01
 
 
 class MainPlot:
     def __init__(self, win):
-        self.plot = win.addPlot(title="Signals")
+        self.plot = win.addPlot(title="Signals",row=0, col=0)#, colspan=2 )
         self.plot.enableAutoRange('x', True)
         self.plot.setYRange(0, 1)
         self.plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
@@ -66,88 +52,45 @@ class MainPlot:
 
         self.peak_items = []
 
-        self.sos = None
+        
 
-        self.zi_I = None
-        self.zi_Q = None
+    def draw(self, t, x, y, ttl, lk):
+        self.curve0.setData(t - t[0], x)
+        self.curve1.setData(t - t[0], y)
+        self.curvez.setData(t - t[0], ttl * max(lk.x_max, lk.y_max))
 
-    def draw(self, t, x, y, ttl):
-        self.curve0.setData(t,x)
-        self.curve1.setData(t, y)
-
-        # Find nan range
-        nan_indices = np.where(np.isnan(x))[0]
-        if len(nan_indices) > 0:
-            print(nan_indices[0], nan_indices[-1])
-
-        Ts = abs(np.median(np.diff(buft))) * 1e-6
-        fs = 1 / Ts
-
-        if self.sos is None:
-            self.sos = butter(3, 5, fs=fs, output='sos')
-            n_sections = self.sos.shape[0]
-
-            self.zi_I = np.zeros((n_sections, 2))
-            self.zi_Q = np.zeros((n_sections, 2))
-            print(fs)
-
-        edges = np.where((ttl[:-1] == 0) & (ttl[1:] == 1))[0]
-
-        # Soft Sync
-        # T0 = abs(np.median(np.diff(t[edges])))
-        # f0 = 1 / T0
-        # s = np.sin(2 * np.pi * f0 * t)
-
-        # Hard sync
-        phase = np.zeros_like(t)
-        for k in range(len(edges)-1):
-            i0 = edges[k]
-            i1 = edges[k+1]
-
-            phase[i0:i1] = np.linspace(0, 2*np.pi, i1-i0, endpoint=False)
-        s = np.sin(phase)
-        c = np.cos(phase)
-
-        # self.curvez.setData(t, c * max(x_max, y_max))
-
-        I_raw = x * c
-        Q_raw = x * s
-        # sos = butter(3, 5, fs=fs, output='sos')
-        # I = sosfilt(sos, I_raw)
-        # Q = sosfilt(sos, Q_raw)
-
-        I, self.zi_I = sosfilt(self.sos, I_raw, zi=self.zi_I)
-        Q, self.zi_Q = sosfilt(self.sos, Q_raw, zi=self.zi_Q)
-
-
-        phi = np.arctan2(Q, I)
-        phi = np.unwrap(phi)
-
-        # A = np.sqrt(I**2 + Q**2)
-
-        self.curvez.setData(t, phi * max(x_max, y_max))
-
-        # Safe range setting with bounds checking
-        y_range_min = float(min(y_min, x_min) * 2)
-        y_range_max = float(max(x_max, y_max) * 5)
+        y_range_min = float(min(lk.y_min, lk.x_min) * 2)
+        y_range_max = float(max(lk.x_max, lk.y_max) * 5)
         if np.isfinite([y_range_min, y_range_max]).all() and abs(y_range_max - y_range_min) < 1e6:
             self.plot.setYRange(y_range_min, y_range_max)
-
-
-class PhaseView:
+class PhasePlot:
     def __init__(self, win):
-        self.plot = win.addPlot(title="Phase", row=1, col=2)
-        self.plot.enableAutoRange(True)
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.curve = self.plot.plot(pen='w')
+        self.plot = win.addPlot(title="Phase",row=1, col=0)
+        self.plot.enableAutoRange('x', True)
+        self.plot.enableAutoRange('y', True)
+        # self.plot.setYRange(-np.pi, np.pi)
+        self.plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
+        self.curve0 = self.plot.plot(pen='y', name="A0")
+        
 
-    def update(self):
-        # np.corel
-        peaks, _ = find_peaks(buf0, height=0.2, prominence=0.05, distance=5)
+    def draw(self, phi, phi_t):
+        self.curve0.setData(phi_t, phi)
+class AmpPlot:
+    def __init__(self, win):
+        self.plot = win.addPlot(title="Amplitude",row=2, col=0)
+        self.plot.enableAutoRange('x', True)
+        self.plot.enableAutoRange('y', True)
+        # self.plot.setYRange(-np.pi, np.pi)
+        self.plot.showGrid(x=True, y=True, alpha=0.3)  # Add grid to main plot
+        self.curve0 = self.plot.plot(pen='y', name="A0")
+        
+
+    def draw(self, amp, amp_t):
+        self.curve0.setData(amp_t, amp)
 
 class FFTView:
     def __init__(self, win):
-        self.plot = win.addPlot(title="FFT", row=1, col=0)
+        self.plot = win.addPlot(title="FFT", row=1, col=1)
         self.plot.enableAutoRange(True)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.curve = self.plot.plot(pen='w')
@@ -156,23 +99,23 @@ class FFTView:
 
     # def update():
 
-    def setData(self, e):
-        # if np.isnan(data).any(): return
+    def setData(self, t, x):
+        if np.isnan(x).any(): 
+            print("nan bad")
+            exit(1)
+            return
 
-        data = buf0
-        data = np.nan_to_num(data)
-
-        sp = rfft(data)
-        dt = abs(np.median(np.diff(buft))) * 1e-6
+        sp = rfft(x)
+        dt = abs(np.median(np.diff(t)))
         self.i+=1
         if self.i % 100 ==0:
             print("Sampling: ", round(1/dt), "Hz")
-        freqs = rfftfreq(len(data), d=dt)
+        freqs = rfftfreq(len(x), d=dt)
         magnitude = np.abs(sp)
         magnitude /= np.max(magnitude)
 
-        f_view = freqs[freqs<150]
-        m_view = magnitude[freqs<150]
+        f_view = freqs[freqs<500]
+        m_view = magnitude[freqs<500]
 
         peaks, _ = find_peaks(magnitude, height=0.2,
             prominence=0.05,
@@ -250,9 +193,9 @@ class CursorView:
         self.colors = np.zeros((256, 4), dtype=np.uint8)
         self.colors[:,0] = 255
         self.colors[:,3] = alpha
-    def draw(self):
+    def draw(self, lk):
         # Update overlay pointer
-        r = float(max(abs(x_min), abs(x_max), abs(y_min), abs(y_max)))
+        r = float(max(abs(lk.x_min), abs(lk.x_max), abs(lk.y_min), abs(lk.y_max)))
         if not np.isfinite(r) or r > 10 or r < 1e-10:
             return
         
@@ -291,142 +234,38 @@ win = pg.GraphicsLayoutWidget(show=True, title="NanoSpeed")
 
 cursor_view = CursorView(win)
 main_plot = MainPlot(win)
-fft_view = FFTView(win)
+if FFT_ONLY:
+    fft_view = FFTView(win)
+else:
+    phase_plot = PhasePlot(win)
+    amp_plot = AmpPlot(win)
 
 main_plot.plot.getViewBox().sigResized.connect(lambda: cursor_view.update_geometry(main_plot.plot))
 cursor_view.update_geometry(main_plot.plot)
 
-def find_trigger_point(data, level=0.0):
-    for i in range(len(data) - 1):
-        if data[i] <= level and data[i + 1] > level:
-            return i
-    return 0  # Default to start if no trigger found
-
-def filter_data():
-    # rolling view
-    view0 = np.roll(buf0, -ptr)
-    view1 = np.roll(buf1, -ptr)
-    viewz = np.roll(bufz, -ptr)
-    viewt = np.roll(buft, -ptr)
-
-    # Filter the display buffer (zero-phase)
-    if filter_enabled:
-        view0_filt = filtfilt(filt_b, filt_a, view0)
-        view1_filt = filtfilt(filt_b, filt_a, view1)
-        viewz_filt = viewz  # Keep raw z values for triggering and display
-        viewt_filt = viewt * 1e-6  # Keep raw t values for triggering and display
-        # viewz_filt = filtfilt(filt_b, filt_a, viewz)
-    else:
-        view0_filt = view0
-        view1_filt = view1
-        viewz_filt = viewz
-        viewt_filt = viewt * 1e-6
-
-
-    # Apply trigger on filtered data
-    if trigger_enabled:
-        trigger_data = viewz_filt if trigger_channel == 0 else view1_filt
-        trigger_level = viewz_filt.mean() 
-        trigger_idx = find_trigger_point(trigger_data, trigger_level)
-        trigger_idx += trigger_offset
-        
-        # Instead of rolling, slice from trigger point and pad with NaN to avoid wrap-around artifacts
-        valid_length = len(view0_filt) - trigger_idx
-        view0_filt_triggered = np.full_like(view0_filt, np.nan, dtype=np.float64)
-        view1_filt_triggered = np.full_like(view1_filt, np.nan, dtype=np.float64)
-        view_z_filt_triggered = np.full_like(viewz, np.nan, dtype=np.float64)
-        view_t_filt_triggered = np.full_like(viewt_filt, np.nan, dtype=np.float64)
-
-        view0_filt_triggered[:valid_length] = view0_filt[trigger_idx:]
-        view1_filt_triggered[:valid_length] = view1_filt[trigger_idx:]
-        view_z_filt_triggered[:valid_length] = viewz[trigger_idx:]
-        view_t_filt_triggered[:valid_length] = viewt_filt[trigger_idx:]
-
-        view0_filt = view0_filt_triggered
-        view1_filt = view1_filt_triggered
-        viewz_filt = view_z_filt_triggered
-        viewt_filt = view_t_filt_triggered - np.nanmin(view_t_filt_triggered)  # Normalize time to start at zero
-
-    return view0, view0_filt, view1, view1_filt, viewz, viewz_filt, viewt, viewt_filt
-
-    
-def read_serial():
-    global ptr, ready
-
-    data = proc.stdout.read(FRAME_BYTES)
-    if len(data) != FRAME_BYTES:
-        print("End of stream")
-        return
-    dtype = np.dtype([
-        ("x", np.float32),
-        ("y", np.float32),
-        ("z", np.int8),
-        ("t", np.uint32),
-    ])
-    samples = np.frombuffer(data, dtype=dtype)
-
-    x_values = samples['x']
-    y_values = samples['y']
-    z_values = samples['z']
-    t_values = samples['t']
-    # Store RAW data
-    n = len(x_values)
-    if ptr + n < HISTORY:
-        buf0[ptr:ptr+n] = x_values
-        buf1[ptr:ptr+n] = y_values
-        bufz[ptr:ptr+n] = z_values
-        buft[ptr:ptr+n] = t_values
-    else:
-        ready = True
-        k = HISTORY - ptr
-        buf0[ptr:] = x_values[:k]
-        buf1[ptr:] = y_values[:k]
-        bufz[ptr:] = z_values[:k]
-        buft[ptr:] = t_values[:k]
-
-        buf0[:n-k] = x_values[k:]
-        buf1[:n-k] = y_values[k:]
-        bufz[:n-k] = z_values[k:]
-        buft[:n-k] = t_values[k:]
-
-    ptr = (ptr + n) % HISTORY
-
 def draw():
-    view0_raw, view0_filt, view1_raw, view1_filt, viewz_raw, viewz_filt, viewt_raw, viewt_filt = filter_data()
+    x,y,ttl,t, phi, phi_t, amp = lk.get_raw_data()
 
-    # if fft_enabled:
-    #     fft_view.setData(view0_raw)
-    fft_view.setData(view0_raw)
+    if FFT_ONLY:
+        fft_view.setData(t, x)
+    else:
+        phase_plot.draw(phi, phi_t)
+        # amp_plot.draw(amp,phi_t)
 
-    main_plot.draw(viewt_raw, view0_raw, view1_raw, viewz_raw)
+    main_plot.draw(t, x, y, ttl, lk)
+
 
     cursor_view.set_data(
-        view0_raw[-256:],
-        view1_raw[-256:],
+        x[-256:],
+        y[-256:],
     )
-    cursor_view.draw()
+    cursor_view.draw(lk)
 
 def update():
-    global x_min, x_max, y_min, y_max
+    lk.read_serial(handle_phase=not FFT_ONLY)
 
-    read_serial()
-    
-    x_min = min(buf0.min(), x_min)
-    x_max = max(buf0.max(), x_max)
-    y_min = min(buf1.min(), y_min)
-    y_max = max(buf1.max(), y_max)
-
-    # Reset if values become too large
-    if not np.isfinite([x_min, x_max, y_min, y_max]).all() or max(abs(x_min), abs(x_max), abs(y_min), abs(y_max)) > 1e6:
-        x_min = buf0.min()
-        x_max = buf0.max()
-        y_min = buf1.min()
-        y_max = buf1.max()
-
-    if ready:
+    if lk.ready:
         draw()
-
-
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
