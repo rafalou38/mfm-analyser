@@ -5,32 +5,35 @@ import time
 import scipy.signal as signal
 from scipy.optimize import curve_fit
 
+# Acquisition photorésistance en direct
+# Connection a l'oscilloscope via VISA
+# Deux méthodes de calcul:
+# - Décalage temporel entre les pics (find_peaks)
+# - Fit de sinus (curve_fit) pour extraire la phase
+# Affichage en temps réel de:
+# - Les deux signaux (CH1 et CH2)
+# - Les sinus ajustés (fit)
+# - Le décalage de phase instantané (fit)
+# - Le décalage de phase sur les pics (find_peaks)
 
-# -------------------------
-# CONFIG
-# -------------------------
 SCOPE_IP = "192.168.1.42"
 CHANNEL = "CHAN1"
-UPDATE_DELAY = 1/1   # seconds between refresh (~1 Hz)
+UPDATE_DELAY = 1/1 
 
-# -------------------------
-# CONNECT TO SCOPE
-# -------------------------
+# ---------------------------
+# CONNECTION A L'OSCILLOSCOPE
+# ---------------------------
 rm = pyvisa.ResourceManager()
 scope = rm.open_resource(f"TCPIP0::{SCOPE_IP}::INSTR")
 scope.timeout = 5000
 
 print(scope.query("*IDN?"))
 
-# -------------------------
-# CONFIGURE WAVEFORM MODE
-# -------------------------
 scope.write(":WAV:FORM BYTE")
-# scope.write(":WAV:MODE RAW")
 scope.write(":WAV:MODE NORM")
 scope.write(f":WAV:SOUR {CHANNEL}")
 
-def get_waveform(channel, raw=False):
+def probe_scope(channel, raw=False):
     scope.write(f":WAV:SOUR {channel}")
     scope.write(":WAV:FORM BYTE")
 
@@ -58,59 +61,60 @@ def get_waveform(channel, raw=False):
 
     return time_axis, volts
 
-# -------------------------
-# SETUP PLOT
-# -------------------------
 plt.ion()
 fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(10, 6))
 
+
+# CH1 = photorésistance
 line1, = axes[0, 0].plot([], [])
 line1_fit, = axes[0, 0].plot([], [], color='red', linestyle='--')
 axes[0, 0].set_xlabel("Time (s)")
 axes[0, 0].set_ylabel("Voltage (V)")
 axes[0, 0].set_title("CH1")
 
+# Lignes verticales pour les pics
 vlines1 = axes[0,0].vlines([], ymin=0, ymax=1, color='red', linestyle='--')
 
 
+
+# CH2 = signal de référence
 line2, = axes[1, 0].plot([], [])
 line2_fit, = axes[1, 0].plot([], [], color='red', linestyle='--')
 axes[1, 0].set_xlabel("Time (s)")
 axes[1, 0].set_ylabel("Voltage (V)")
 axes[1, 0].set_title("CH2")
-
+# Lignes verticales pour les pics
 vlines2 = axes[1,0].vlines([], ymin=0, ymax=1, color='red', linestyle='--')
 
+
+# Déphasage par fit
 line3, = axes[0, 1].plot([], [])
 axes[0, 1].set_xlabel("Time (s)")
 axes[0, 1].set_ylabel("Dphi (degrees)")
 axes[0, 1].set_title("Phase Shift")
 
+# Amplitude du signal
 line4, = axes[1, 1].plot([], [])
 axes[1, 1].set_xlabel("Time (s)")
 axes[1, 1].set_ylabel("Voltage (V)")
 axes[1, 1].set_title("Amplitude")
 
-# Dots
+# Déphasage par pics (points = décalage instantané, ligne = moyenne sur la fenêtre)
 line5, = axes[2, 1].plot([], [], linestyle='None', marker='o')
 line5_avg, = axes[2, 1].plot([], [], color='green')
 
 axes[2, 1].set_xlabel("Time (s)")
-axes[2, 1].set_ylabel("Dphi (degrees)")
+axes[2, 1].set_ylabel("Dphi (deg)")
 axes[2, 1].set_title("Phase Shift (peaks)")
 
 
-# lineS1, = axes[1, 1].plot([], [], color='green')
+# Buffers de données
+peaks_shift = [] # Retard instantané sur chaque pic
+peaks_shift_avg = [] # Moyenne sur chaque fenêtre
+peaks_shift_t = [] # Temps associé aux décalages
 
-
-
-
-peaks_shift = []
-peaks_shift_avg = []
-peaks_shift_t = []
-
-shift_values = []
-amplitude_values = []
+shift_values = [] # Décalage par méthode fit
+amplitude_values = [] # Amplitude du fit
 times = []
 
 
@@ -118,10 +122,6 @@ times = []
 def sine(t, A, f, phi, C):
     return A * np.sin(2*np.pi*f*t + phi) + C
 
-
-# -------------------------
-# REAL-TIME LOOP
-# -------------------------
 try:
     while True:
 
@@ -130,11 +130,10 @@ try:
         time_div = float(scope.query(":TIM:SCAL?"))
         window_time = time_div * 10
 
-        # print(f"Time div: {time_div:.3e} s/div, Window: {window_time:.3e} s")
-
+        # Acquisition
         scope.write(":STOP")
-        t1, v1 = get_waveform("CHAN1", raw=False)
-        t2, v2 = get_waveform("CHAN2", raw=False)
+        t1, v1 = probe_scope("CHAN1", raw=False)
+        t2, v2 = probe_scope("CHAN2", raw=False)
         scope.write(":RUN")
         time.sleep(window_time)
 
@@ -142,18 +141,14 @@ try:
             print("Empty waveform")
             continue
 
+        # Méthode 1
+        # Fit de deux sinusoïdales sur vs et ve
         params1, _ = curve_fit(sine, t1, v1, p0=[10, 35, 0,0])
         A_fit, f_fit, phi_fit, C_fit = params1
-        # print("A =", A_fit)
-        # print("f =", f_fit)
-        # print("phi =", phi_fit)
         v1_fit = sine(t1, *params1)
 
         params2, _ = curve_fit(sine, t2, v2, p0=[10, 35, 0,0])
         A_fit2, f_fit2, phi_fit2, C_fit2 = params2
-        # print("A =", A_fit2)
-        # print("f =", f_fit2)
-        # print("phi =", phi_fit2)
         v2_fit = sine(t2, *params2)
 
         shift = phi_fit - phi_fit2
@@ -171,9 +166,8 @@ try:
         axes[1, 1].set_xlim(times[0], times[-1])
         axes[1, 1].set_ylim(np.min(amplitude_values), np.max(amplitude_values))
 
-
-        # Peaks
-
+        # Méthode 2
+        # Détection des pics
         mins1, _ = signal.find_peaks(-v1, prominence=0.1, distance=5)
         print(f"CH1 Peaks: {len(mins1)}", t1[mins1])
 
@@ -181,20 +175,13 @@ try:
 
         print(f"CH2 Peaks: {len(mins2)}", t2[mins2])
 
+        # Affichage des pics (lignes verticales)
         vlines1.set_segments([[(t1[m], np.min(v1)), (t1[m], np.max(v1))] for m in mins1])
         vlines2.set_segments([[(t2[m], np.min(v2_fit)), (t2[m], np.max(v2_fit))] for m in mins2])
 
-        # mins2, _ = signal.find_peaks(-v2, prominence=)
-
-        # plt.vlines(data['t'].iloc[mins], ymin=m, ymax=M, color='red', linestyle='--', label='Minima')
-
-        # axes[0, 0].vlines(t1[mins1], ymin=np.min(v1), ymax=np.max(v1), color='red', linestyle='--', label='Minima')
-        # axes[1, 0].vlines(t2[mins2], ymin=np.min(v2), ymax=np.max(v2), color='red', linestyle='--', label='Minima')
-
+        # Calcul du décalage temporel entre les pics
         sp = 0
-
         for m1, m2 in zip(mins1, mins2):
-            # print(f"Peak shift: {t1[m1] - t2[m2]:.3e} s at t={t0 + (t1[m1] + t2[m2])/2:.3e} s")
             dp = t1[m1] - t2[m2]
             t = t0 + (t1[m1] + t2[m2]) / 2
 
@@ -215,8 +202,8 @@ try:
         axes[2, 1].set_ylim(np.min(peaks_shift), np.max(peaks_shift))
 
 
+        # Lissage du signal
         # sync = sine(t2, 1, f_fit2, phi_fit2, 0) * v1
-
         # sos = signal.butter(4, 2, 'low', fs=1000, output='sos')
         # I = signal.sosfiltfilt(sos, sync)
 
@@ -224,6 +211,8 @@ try:
         # axes[1, 1].set_xlim(t1[0], t1[-1])
         # axes[1, 1].set_ylim(np.min(I), np.max(I))
 
+
+        # Affichage des signaux et fits
         line1.set_data(t1, v1)
         line1_fit.set_data(t1, v1_fit)
         line2.set_data(t2, v2)
@@ -237,11 +226,6 @@ try:
 
         fig.canvas.draw()
         fig.canvas.flush_events()
-
-
-        print("took", time.time() - t0)
-
-        # time.sleep(UPDATE_DELAY)
 
 except KeyboardInterrupt:
     print("Stopped.")

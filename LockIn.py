@@ -1,20 +1,17 @@
-import serial
+from datetime import datetime
 import numpy as np
-from scipy.fft import rfft, rfftfreq
-from scipy.signal import find_peaks
-import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore
-import time
 import subprocess
-from scipy.signal import butter, filtfilt, sosfilt, sosfilt_zi
-
+import os
+import select
+timestamp = datetime.now().strftime("%Y%m%d_%H:%M:%S")
 class LockIn:
     def __init__(self, history):
         self.ptr = 0
         self.phi_ptr = 0
 
         self.proc = subprocess.Popen(
-            ["./serial"],
+            ["./serial"], # lecture série temps réel (programme c)
+            # ["cat", "./free.bin"], # enregistrement sauvegardé
             stdout=subprocess.PIPE,
             bufsize=0
         )
@@ -23,10 +20,10 @@ class LockIn:
         self.history_sz = history
         self.phi_history_sz = history * 10
 
-        self.buf0 = np.zeros(self.history_sz, dtype=np.float64)
-        self.buf1 = np.zeros(self.history_sz, dtype=np.float64)
+        self.buf0 = np.zeros(self.history_sz, dtype=np.float128)
+        self.buf1 = np.zeros(self.history_sz, dtype=np.float128)
         self.bufz = np.zeros(self.history_sz, dtype=np.int8)
-        self.buft = np.zeros(self.history_sz, dtype=np.float64)
+        self.buft = np.zeros(self.history_sz, dtype=np.float128)
 
         self.last_phi = 0.0
         self.phase_acc = 0.0
@@ -34,6 +31,11 @@ class LockIn:
         self.bufphi = np.zeros(self.phi_history_sz, dtype=np.float32)
         self.bufamp = np.zeros(self.phi_history_sz, dtype=np.float32)
         self.bufphit = np.zeros(self.phi_history_sz, dtype=np.float32)
+
+        self.buf_phi_simple = np.zeros(self.phi_history_sz, dtype=np.float32)
+        self.buf_amp_simple = np.zeros(self.phi_history_sz, dtype=np.float32)
+        self.buf_simple_t = np.zeros(self.phi_history_sz, dtype=np.float32)
+        self.buf_simple_ptr = 0
 
         self.x_min = 0.0
         self.x_max = 0.01
@@ -46,8 +48,23 @@ class LockIn:
         self.zi_I = None
         self.zi_Q = None
 
-    
-    def read_serial(self, handle_phase=True):
+        self.measure_freqs = []
+        self.measure_phi = []
+        self.measure_amp = []
+
+        self.s = np.zeros(self.history_sz, dtype=np.float32)
+
+        self.peaks = []
+
+        self.i = 0
+
+    # Rattrape le retard
+    def clear_serial(self):
+        while select.select([self.proc.stdout.fileno()], [], [], 0)[0]:
+            os.read(self.proc.stdout.fileno(), 65536)
+
+    # Lecture des données série
+    def read_serial(self, phase=True):
         data = self.proc.stdout.read(self.FRAME_BYTES)
         if len(data) != self.FRAME_BYTES:
             print("End of stream")
@@ -65,19 +82,7 @@ class LockIn:
         z_values = samples['z']
         t_values = samples['t'] * 1e-6
 
-        # Process window
-        self.update_bounds()
-        Ts = abs(np.median(np.diff(t_values)))
-        fs = 1 / Ts
-
-        if self.sos is None:
-            self.sos = butter(3, 5, fs=fs, output='sos')
-            n_sections = self.sos.shape[0]
-
-            self.zi_I = np.zeros((n_sections, 2))
-            self.zi_Q = np.zeros((n_sections, 2))
-            print("Sampeling frequency: ", fs)
-        
+        # Gestion du buffer circulaire
         n = len(x_values)
         if self.ptr + n < self.history_sz:
             self.buf0[self.ptr:self.ptr+n] = x_values
@@ -99,67 +104,17 @@ class LockIn:
 
         self.ptr = (self.ptr + n) % self.history_sz
 
-        if not handle_phase: return
+        if phase:
+            self.handle_phase_simple(self.buf0, self.bufz, self.buft)
 
-        edges = np.where((z_values[:-1] == 0) & (z_values[1:] == 1))[0]
-        # Hard sync
-        phase = np.zeros_like(t_values)
+        self.update_bounds()
+    
 
-        # estimate frequency from edge spacing if possible
-        if len(edges) >= 2:
-            periods = np.diff(edges)
-            mean_period = np.average(periods)
-            print("Current frequency: ", 1/(mean_period) * fs, len(edges))
-            dphi = 2 * np.pi / mean_period
-            self.last_dphi = dphi
-        elif hasattr(self, "last_dphi"):
-            dphi = self.last_dphi
-        else:
-            # fallback
-            dphi = 2 * np.pi * 40.0 / fs
-
-        # continuous oscillator
-        for i in range(len(phase)):
-            if i in edges:
-                self.phase_acc = 0.0
-
-            phase[i] = self.phase_acc
-            self.phase_acc += dphi
-
-        s = np.sin(phase)
-        c = np.cos(phase)
-
-        I_raw = x_values * c
-        Q_raw = x_values * s
-
-        I, self.zi_I = sosfilt(self.sos, I_raw, zi=self.zi_I)
-        Q, self.zi_Q = sosfilt(self.sos, Q_raw, zi=self.zi_Q)
-
-        phi = np.arctan2(Q, I)
-        phi = np.unwrap(
-            np.concatenate(([self.last_phi], phi))
-        )[1:]
-        self.last_phi = phi[-1]
-
-        amp = np.sqrt(I * I + Q * Q)
-        print("avg phase: ", np.mean(phi))
-        # print(amp)
-
-        # Store RAW data
-        if self.ready:
-            phi_n = len(phi)
-            if self.phi_ptr + phi_n < self.phi_history_sz:
-                self.bufamp[self.phi_ptr:self.phi_ptr+phi_n] = amp
-                self.bufphi[self.phi_ptr:self.phi_ptr+phi_n] = phi
-                self.bufphit[self.phi_ptr:self.phi_ptr+phi_n] = t_values
-            else:
-                k = self.phi_history_sz - self.phi_ptr
-                self.bufamp[self.phi_ptr:] = amp[:k]
-                self.bufphi[:phi_n-k] = phi[k:]
-                self.bufphit[self.phi_ptr:] = t_values[:k]
-                self.bufphit[:phi_n-k] = t_values[k:]
-
-            self.phi_ptr = (self.phi_ptr + phi_n) % self.phi_history_sz
+    def reset_bounds(self):
+        self.x_min = 0.0
+        self.x_max = 0.01
+        self.y_min = 0.0
+        self.y_max = 0.01
 
     def update_bounds(self):
         self.x_min = min(self.buf0.min(), self.x_min)
@@ -167,15 +122,13 @@ class LockIn:
         self.y_min = min(self.buf1.min(), self.y_min)
         self.y_max = max(self.buf1.max(), self.y_max)
 
-        # Reset if values become too large
         if not np.isfinite([self.x_min, self.x_max, self.y_min, self.y_max]).all() or max(abs(self.x_min), abs(self.x_max), abs(self.y_min), abs(self.y_max)) > 1e6:
             self.x_min = self.buf0.min()
             self.x_max = self.buf0.max()
             self.y_min = self.buf1.min()
             self.y_max = self.buf1.max()
 
-
-
+    # Restructuration du buffer circulaire
     def get_raw_data(self):
         x = np.roll(self.buf0, -self.ptr)
         y = np.roll(self.buf1, -self.ptr)
@@ -184,59 +137,89 @@ class LockIn:
         phi = np.roll(self.bufphi, -self.phi_ptr)
         phi_t = np.roll(self.bufphit, -self.phi_ptr)
         amp = np.roll(self.bufamp, -self.phi_ptr)
+        s = np.roll(self.s, -self.phi_ptr)
 
-        return x,y,ttl,t, phi, phi_t, amp
+        phi_simple = np.roll(self.buf_phi_simple, -self.buf_simple_ptr)
+        amp_simple = np.roll(self.buf_amp_simple, -self.buf_simple_ptr)
+        phi_simple_t = np.roll(self.buf_simple_t, -self.buf_simple_ptr)
+
+        return x,y,ttl,t, phi, phi_t, amp, s, phi_simple, phi_simple_t, amp_simple
+
+    def handle_phase_simple(self, x_values, z_values, t_values):
+        avg = np.mean(x_values)
+
+        x_pad = np.pad(x_values, (4, 5), mode='edge')
+
+        # Détection des pics sur le signal
+        n = len(x_values)
+        back5  = np.array([np.mean(x_pad[i:i+5])   for i in range(n)])
+        front5 = np.array([np.mean(x_pad[i+5:i+10]) for i in range(n)])
+        edges = np.where((back5[:-1] < avg) & (front5[1:] >= avg))[0]
+
+        # Detection des créneaux
+        filtered_edges = []
+        for i in range(1, len(edges)):
+            # 1/100 pour 100 Hz
+            if t_values[edges[i]] - t_values[edges[i-1]] > 1/100:
+                filtered_edges.append(edges[i-1])
+        filtered_edges.append(edges[-1])
+
+        self.peaks = [t_values[i] for i in filtered_edges]
+
+        # Temps d’échantillonnage
+        # Ts = abs(np.median(np.diff(t_values)))
+        # fs = 1 / Ts
+        # print(fs)
+
+        edges_ref = np.where((z_values[:-1] == 0) & (z_values[1:] == 1))[0]
+        d = np.diff(t_values[edges_ref])
+        t0 = np.median(d)
+        # print("\n Période médiane: ", 1/t0, " Hz ")
+
+        phases = []
+
+        # TTL suivant
+        # for i in filtered_edges:
+        #     # Find next reference edge
+        #     next_edge = edges_ref[edges_ref > i].min() if edges_ref[edges_ref > i].size > 0 else None
+        #     if next_edge is not None:
+        #         phases.append((t_values[i] - t_values[next_edge]) * 2 * np.pi / t0)
+
+        # TTL le plus proche
+        for i in filtered_edges:
+            diffs = np.abs(edges_ref - i)
+            nearest_edge = edges_ref[np.argmin(diffs)]
+            phases.append((t_values[i] - t_values[nearest_edge]) * 2 * np.pi / t0)
 
 
-# def find_trigger_point(data, level=0.0):
-#     for i in range(len(data) - 1):
-#         if data[i] <= level and data[i + 1] > level:
-#             return i
-#     return 0  # Default to start if no trigger found
-# def filter_data():
-#     pass
-    # # rolling view
-    # view0 = np.roll(buf0, -ptr)
-    # view1 = np.roll(buf1, -ptr)
-    # viewz = np.roll(bufz, -ptr)
-    # viewt = np.roll(buft, -ptr)
+        # Stockage des valeurs
+        self.buf_simple_t[self.buf_simple_ptr] = (np.max(t_values) + np.min(t_values))/2
+        self.buf_phi_simple[self.buf_simple_ptr] = np.median(phases)
+        self.buf_amp_simple[self.buf_simple_ptr] = np.max(x_pad) - np.min(x_pad)
 
-    # # Filter the display buffer (zero-phase)
-    # if filter_enabled:
-    #     view0_filt = filtfilt(filt_b, filt_a, view0)
-    #     view1_filt = filtfilt(filt_b, filt_a, view1)
-    #     viewz_filt = viewz  # Keep raw z values for triggering and display
-    #     viewt_filt = viewt * 1e-6  # Keep raw t values for triggering and display
-    #     # viewz_filt = filtfilt(filt_b, filt_a, viewz)
-    # else:
-    #     view0_filt = view0
-    #     view1_filt = view1
-    #     viewz_filt = viewz
-    #     viewt_filt = viewt * 1e-6
+        self.buf_phi_simple = np.unwrap(self.buf_phi_simple)
+        # Donnés enregistrées en continu
+        with open(f"phase-{timestamp}.csv", "a") as f:
+            f.write(f"{self.buf_simple_t[self.buf_simple_ptr]},{1/t0},{np.degrees(self.buf_phi_simple[self.buf_simple_ptr])},{np.max(x_pad) - np.min(x_pad)},{np.std(phases)}\n")
+
+        self.buf_simple_ptr += 1
+        if self.buf_simple_ptr >= self.phi_history_sz:
+            self.buf_simple_ptr = 0
 
 
-    # # Apply trigger on filtered data
-    # if trigger_enabled:
-    #     trigger_data = viewz_filt if trigger_channel == 0 else view1_filt
-    #     trigger_level = viewz_filt.mean() 
-    #     trigger_idx = find_trigger_point(trigger_data, trigger_level)
-    #     trigger_idx += trigger_offset
-        
-    #     # Instead of rolling, slice from trigger point and pad with NaN to avoid wrap-around artifacts
-    #     valid_length = len(view0_filt) - trigger_idx
-    #     view0_filt_triggered = np.full_like(view0_filt, np.nan, dtype=np.float64)
-    #     view1_filt_triggered = np.full_like(view1_filt, np.nan, dtype=np.float64)
-    #     view_z_filt_triggered = np.full_like(viewz, np.nan, dtype=np.float64)
-    #     view_t_filt_triggered = np.full_like(viewt_filt, np.nan, dtype=np.float64)
+    def get_trigger(self):
+        t = np.roll(self.buft, -self.ptr)
+        ttl = np.roll(self.bufz, -self.ptr)
 
-    #     view0_filt_triggered[:valid_length] = view0_filt[trigger_idx:]
-    #     view1_filt_triggered[:valid_length] = view1_filt[trigger_idx:]
-    #     view_z_filt_triggered[:valid_length] = viewz[trigger_idx:]
-    #     view_t_filt_triggered[:valid_length] = viewt_filt[trigger_idx:]
+        edges = np.where(
+            (ttl[:-1] == 0) &
+            (ttl[1:] == 1)
+        )[0]
 
-    #     view0_filt = view0_filt_triggered
-    #     view1_filt = view1_filt_triggered
-    #     viewz_filt = view_z_filt_triggered
-    #     viewt_filt = view_t_filt_triggered - np.nanmin(view_t_filt_triggered)  # Normalize time to start at zero
+        if len(edges) == 0:
+            return t[0]
 
-    # return view0, view0_filt, view1, view1_filt, viewz, viewz_filt, viewt, viewt_filt
+        return t[edges[0] + 1]
+
+    def reset_phase(self):
+        self.last_phi = 0.0

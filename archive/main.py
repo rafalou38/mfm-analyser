@@ -6,6 +6,8 @@ import numpy as np
 from scipy.signal import find_peaks
 
 
+# Affichage des signaux a partir d'un enregistrement CSV de l'oscilloscope.
+
 def plot(f):
     data = pd.read_csv(f)
     t0 = float(data.columns[2].split('=')[1].strip())

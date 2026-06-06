@@ -2,6 +2,10 @@ import serial
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+# Affichage des données brutes de l'arduino nano
+
+
 ser = serial.Serial('/dev/ttyUSB1', 1000000, timeout=0)
 
 plt.ion()

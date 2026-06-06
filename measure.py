@@ -3,12 +3,14 @@ from scipy.fft import rfft, rfftfreq
 from scipy.signal import find_peaks
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
+import time
+from scipy.signal import butter
+from scipy.optimize import curve_fit
+import time
 
 from LockIn import LockIn
 
-HISTORY = 256*4
-
-FFT_ONLY = False
+HISTORY = 256*30
 
 lk = LockIn(HISTORY)
 
@@ -16,59 +18,44 @@ lk = LockIn(HISTORY)
 class MainPlot:
     def __init__(self, win):
         self.plot = win.addPlot(title="Signaux",row=0, col=0)
-        self.plot.enableAutoRange('x', False)
+        self.plot.enableAutoRange('x', True)
         self.plot.setYRange(0, 1)
-        self.plot.setXRange(0, 0.25)
-
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.curve0 = self.plot.plot(pen=pg.mkPen('b', width=3), name="A0")
-        self.curvez = self.plot.plot(pen=pg.mkPen('m', width=3), name="Az")
+        self.curve1 = self.plot.plot(pen=pg.mkPen('r', width=3), name="Model")
 
+        self.peaks = []
         self.peak_items = []
 
-    def draw(self, t, x, y, ttl, lk, s):
-        t0 = lk.get_trigger()
-        # Affichage courbes
-        self.curve0.setData(t - t0, x)
-        self.curvez.setData(t - t0, ttl * max(lk.x_max, lk.y_max))
+        self.model = None
+        self.model_t = None
 
-        # Mise a jour range
-        y_range_min = float(min(lk.y_min, lk.x_min) * 2)
-        y_range_max = float(max(lk.x_max, lk.y_max) * 5)
+    def draw(self, t, x):
+        self.curve0.setData(t, x)
+
+        y_range_min = float(min(lk.y_min, lk.x_min) * 1.1)
+        y_range_max = float(max(lk.x_max, lk.y_max) * 1.85)
         if np.isfinite([y_range_min, y_range_max]).all() and abs(y_range_max - y_range_min) < 1e6:
             self.plot.setYRange(y_range_min, y_range_max)
 
         # Mis a jour pics
+        if self.model is not None:
+            self.curve1.setData(self.model_t, self.model)
+        else:
+            self.curve1.setData([], [])
+
         for item in self.peak_items:
             self.plot.removeItem(item)
-        for peak_t in lk.peaks:
-            self.peak_items.append(pg.InfiniteLine(pos=peak_t-t0, angle=90, pen='r'))
+        self.peak_items.clear()
+        # for e in self.peak_items:
+        #     # Remove
+        #     self.plot.removeItem(e)
+        for peak_i in self.peaks:
+            peak_t = t[peak_i]
+            # print(f"Peak at {t:.2f} s")
+            self.peak_items.append(pg.InfiniteLine(pos=peak_t, angle=90, pen='r'))
             self.plot.addItem(self.peak_items[-1])
 
-# Graphique Phase(t)
-class PhasePlot:
-    def __init__(self, win):
-        self.plot = win.addPlot(title="Phase",row=1, col=0)
-        self.plot.enableAutoRange('x', True)
-        self.plot.enableAutoRange('y', True)
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.curve0 = self.plot.plot(name="A0", pen=pg.mkPen('b', width=3))
-
-    def draw(self, phi, phi_t):
-        self.curve0.setData(phi_t, np.degrees(phi))
-
-# Graphique Amplitude(t)
-class AmpPlot:
-    def __init__(self, win):
-        self.plot = win.addPlot(title="Amplitude",row=2, col=0)
-        self.plot.enableAutoRange('x', True)
-        self.plot.enableAutoRange('y', True)
-
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.curve0 = self.plot.plot(name="A0", pen=pg.mkPen('r', width=3))
-
-    def draw(self, amp, amp_t):
-        self.curve0.setData(amp_t, amp)
 
 class FFTView:
     def __init__(self, win):
@@ -78,6 +65,8 @@ class FFTView:
         self.curve = self.plot.plot(pen='w')
         self.i = 0
         self.labels = []
+
+    # def update():
 
     def setData(self, t, x):
         if np.isnan(x).any(): 
@@ -195,7 +184,7 @@ class CursorView:
     def update_geometry(self, plot):
         rect = plot.getViewBox().sceneBoundingRect()
 
-        w = rect.height() * 0.36
+        w = rect.width() * 0.35
         h = rect.height() * 0.35
 
         self._overlay.setGeometry(
@@ -218,26 +207,25 @@ win = pg.GraphicsLayoutWidget(show=True, title="NanoSpeed")
 
 cursor_view = CursorView(win)
 main_plot = MainPlot(win)
-if FFT_ONLY:
-    fft_view = FFTView(win)
-else:
-    phase_plot = PhasePlot(win)
-    amp_plot = AmpPlot(win)
+# fft_view = FFTView(win)
 
 main_plot.plot.getViewBox().sigResized.connect(lambda: cursor_view.update_geometry(main_plot.plot))
 cursor_view.update_geometry(main_plot.plot)
 
 def draw():
-    x,y,ttl,t, phi, phi_t, amp, s,phi_simple, phi_simple_t, amp_simple = lk.get_raw_data()
+    x = np.roll(lk.buf0, -lk.ptr)
+    y = np.roll(lk.buf1, -lk.ptr)
+    t = np.roll(lk.buft, -lk.ptr)
 
-    if FFT_ONLY:
-        fft_view.setData(t, x)
-    else:
-        mask = phi_simple_t > 0
-        amp_plot.draw(amp_simple[mask], phi_simple_t[mask])
-        phase_plot.draw(phi_simple[mask], phi_simple_t[mask])
+    main_plot.draw(t, x)
 
-    main_plot.draw(t, x, y, ttl, lk, s)
+    # if
+    # print(lk.ready)
+    # try:
+    #     fft_view.setData(t, x)
+    # except Exception as e:
+    #     # print("Error in FFTView:", e)
+    #     pass
 
     cursor_view.set_data(
         x[-256:],
@@ -245,29 +233,100 @@ def draw():
     )
     cursor_view.draw(lk)
 
-saving = False
+paused = False
+ready = False
 def update():
-    if saving: return
-    lk.read_serial()
+    global ready
+    if not paused:
+        lk.read_serial(phase=False)
 
-    if lk.ready:
+    if ready or lk.ptr > 500:
         draw()
+        ready = True
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(0)
 
+# Premiere approche
+def log_deg():
+    x = np.roll(lk.buf0, -lk.ptr)
+    peaks = find_peaks(x, prominence=0.01, distance=50)
+    print("Found peaks:", len(peaks[0]))
+    main_plot.peaks = peaks[0]
+
+# Modèle utilisé
+def sin_exp_dec(t, X0, omega0, phi, Q, C):
+    return X0 * np.exp(-t * omega0 / (2*Q)) * np.cos(omega0 * t * np.sqrt(1 - 1/(4*Q**2)) + phi) + C
+
+popt = None
+def model_dec():
+    global popt
+    x = np.roll(lk.buf0, -lk.ptr)
+    t = np.roll(lk.buft, -lk.ptr)
+
+    print("Fit en cours...")
+    popt, pcov = curve_fit(
+        sin_exp_dec,
+        t - t[0],
+        x,
+        p0=[0.02, 2*np.pi*40, 0, 200, 0],
+        bounds=(
+            [0,    2*np.pi*20,  -np.pi,  10,   -0.02],
+            [0.1, 2*np.pi*80,   np.pi, 500,    0.02],
+        ),
+        maxfev=3000,
+        method='trf'
+    )
+
+    print("Résultats:")
+    print(f"f0: {popt[1] / (2*np.pi):.1f} Hz")
+    print(f"Q: {popt[3]:.1f}")
+    print(f"k: {1.3e-3 * (popt[1])**2:.1f} alpha: {1.3e-3 * popt[1] / popt[3]:.1f}")
+
+    main_plot.model = sin_exp_dec(t - t[0], *popt)
+    main_plot.model_t = t
+
+def save():
+    global popt
+    if popt is not None:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        np.savez(f"{timestamp}-m.npz", popt=popt, x=np.roll(lk.buf0, -lk.ptr), t=np.roll(lk.buft, -lk.ptr))
+        print("Model parameters saved.")
+    else:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        np.savez(f"{timestamp}-m.npz", x=np.roll(lk.buf0, -lk.ptr), t=np.roll(lk.buft, -lk.ptr))
+        print("No model parameters to save.")
+
 class KeyHandler(QtCore.QObject):
     def eventFilter(self, obj, event):
-        global saving
+        global paused
         if event.type() == QtCore.QEvent.Type.KeyPress:
-            if event.key() == QtCore.Qt.Key.Key_R:
-                lk.reset_phase()
-                return True
             if event.key() == QtCore.Qt.Key.Key_Space:
-                saving = not saving
+                if paused:
+                    main_plot.model = None
+                    main_plot.model_t = None
+                paused = not paused
+                return True
+            if event.key() == QtCore.Qt.Key.Key_D:
+                log_deg()
+                return True
+            if event.key() == QtCore.Qt.Key.Key_M:
+                model_dec()
+                paused = True
+                return True
+            if event.key() == QtCore.Qt.Key.Key_S:
+                save()
+                return True
+            if event.key() == QtCore.Qt.Key.Key_R:
+                lk.clear_serial()
+                return True
+            if event.key() == QtCore.Qt.Key.Key_F:
+                lk.reset_bounds()
+                lk.update_bounds()
                 return True
         return super().eventFilter(obj, event)
+
 key_handler = KeyHandler()
 app.installEventFilter(key_handler)
 
