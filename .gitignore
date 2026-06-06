@@ -7,3 +7,4 @@ rigol
 *.out
 *.bin
 *.bkp
+__pycache__/
